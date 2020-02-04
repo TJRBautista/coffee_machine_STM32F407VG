@@ -187,7 +187,22 @@ void TIM2_IRQHandler() {
 			
       // if not reset timer to 0, is_long_click will always be true;
       timer_for_button_hold = 0;
+			timer_for_idle = 0;
     }
+		
+		if ( !is_idle && program_started ) {
+			timer_for_idle++;
+			
+			if ( timer_for_idle > IDLE_TIME * TIMER_2_FREQUENCY ) {
+				if ( is_programming_state ) {
+					// simply exit from programming mode
+					is_programming_state = false;
+				} else {
+					LEDOn(RED);
+				}
+				timer_for_idle = 0;
+			}
+		}
 		
   }
 }
@@ -201,6 +216,7 @@ void TIM3_IRQHandler()
 		if ( num_blink && display_LED_1) {
 			GPIO_ToggleBits(GPIOD, display_LED_1);
 			num_blink--;
+			timer_for_idle = 0;
 		}
 	}
 }
@@ -233,6 +249,9 @@ void EXTI0_IRQHandler() {
       is_button_up = true;
       timer_for_button_released = 0;
     }
+		
+		// reset the timer for idle when button event happened
+		timer_for_idle = 0;
 		
     // Clears the EXTI line pending bit
     EXTI_ClearITPendingBit(EXTI_Line0);
