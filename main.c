@@ -56,8 +56,8 @@ bool program_started = false;
 bool display_default_timer = false;
 bool is_programming_state = false; // this state allows user to change the timing for different size of coffee
 bool is_idle = false;
-bool start_count_down = false;
-int idle_count_down = 0;
+//bool start_count_down = false;
+//int idle_count_down = 0;
 
 
 uint16_t error_LED_1 = 0;
@@ -75,9 +75,9 @@ uint16_t time_ex_large = 6;
 uint16_t new_num_click = 0;
 
 //variables for idling
-uint16_t idleTime = 0;
+//uint16_t idleTime = 0;
 
-void UpdateMachineStatus(void);
+//void UpdateMachineStatus(void);
 
 void InitLEDs() {
   RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOD, ENABLE);
@@ -186,7 +186,7 @@ void TIM2_IRQHandler() {
   if (TIM_GetITStatus(TIM2, TIM_IT_Update) != RESET) {
     TIM_ClearITPendingBit(TIM2, TIM_IT_Update);
     
-	timer_for_button_hold++;
+		timer_for_button_hold++;
     timer_for_button_released++;
 	
     if (!is_button_up && timer_for_button_hold >= LONG_PRESS_TIME * TIMER_2_FREQUENCY) {
@@ -196,10 +196,10 @@ void TIM2_IRQHandler() {
       timer_for_button_hold = 0;
     }
 		
-		idleTime++;
-		if (idleTime < IDLE_TIME)
+		//idleTime++;
+		//if (idleTime < IDLE_TIME) {}
 			//exit programming state
-			UpdateMachineStatus();
+			//UpdateMachineStatus();
   }
 }
 
