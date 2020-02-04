@@ -2,6 +2,7 @@
 
 #include "stm32f4xx.h"
 #include "stdbool.h"
+#include "main.h"
 
 GPIO_InitTypeDef GPIO_Initstructure;
 TIM_TimeBaseInitTypeDef timer_InitStructure;
@@ -41,6 +42,7 @@ const uint16_t LONG_PRESS_TIME = 2; // 3 seconds holding for long press.
 const float MIN_PRESS_TIME = 0.05; // the min single press should need 0.05 second.
 const float DOUBLE_CLICK_TIME = 0.5; // double press should be with in 0.5 second.
 const uint16_t IDLE_TIME = 5;
+const int SOUND_OUTPUT = 1; // output the sound for 1 second
 
 // used to help calculate the time interval for some event
 unsigned int timer_for_button_hold = 0;
@@ -77,6 +79,11 @@ uint16_t time_small = 2;
 uint16_t time_medium = 4;
 uint16_t time_ex_large = 6;
 uint16_t new_num_click = 0;
+
+fir_8 filt;
+bool output_sound = false;
+int timer_for_sound = 0;
+bool start_sound_timer = false;
 
 
 void UpdateMachineStatus(void);
@@ -247,6 +254,11 @@ void TIM2_IRQHandler() {
 			}
 		}
 		
+		if (start_sound_timer) {
+			timer_for_sound++;
+			output_sound = timer_for_sound <= SOUND_OUTPUT * TIMER_2_FREQUENCY;
+		}
+		
   }
 }
 
@@ -297,6 +309,7 @@ void TIM4_IRQHandler()
 					LEDOn(RED);
 					LEDOn(ORANGE);
 					LEDOn(BLUE);
+					start_sound_timer = true;
 				}
 				//coffee_size = (coffee_size + 1 ) % 3;
 				//is_finish_blink = false;
@@ -340,9 +353,6 @@ void EXTI0_IRQHandler() {
 		if ( is_idle ) {
 			is_idle = false;
 			coffee_size = -1;
-			LEDOn(RED);
-			LEDOn(ORANGE);
-			LEDOn(BLUE);
 		}
 		
     // Clears the EXTI line pending bit
@@ -500,15 +510,109 @@ int main() {
 	EnableTimer3Interrupt();
 	EnableEXTIInterrupt();
 	
+	/*
+	This block is for sound setup
+	*/
+	SystemInit();
+
+	//enables GPIO clock for PortD
+	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOD, ENABLE);
+
+	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_15;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_OUT;
+	GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+
+	GPIO_Init(GPIOD, &GPIO_InitStructure);
+
+	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOC, ENABLE);
+
+	codec_init();
+	codec_ctrl_init();
+
+	I2S_Cmd(CODEC_I2S, ENABLE);
+
+	initFilter(&filt);
+	
+	/*
+	sound set up
+	*/
+	
+	
 	while(1) {
 		UpdateMachineStatus();
 		if (program_started)  {
 			if ( !is_idle )	{
 				DisableTimer4Interrupt();
 				ShowLED();
+				output_sound = false;
+				timer_for_sound = 0;
+				start_sound_timer = false;
 			} else	{
 				EnableTimer4Interrupt();
 			}
+			
+			if (SPI_I2S_GetFlagStatus(CODEC_I2S, SPI_I2S_FLAG_TXE) && output_sound)
+    	{
+    		SPI_I2S_SendData(CODEC_I2S, sample);
+
+    		//only update on every second sample to insure that L & R ch. have the same sample value
+    		if (sampleCounter & 0x00000001)
+    		{
+    			sawWave += NOTEFREQUENCY;
+    			if (sawWave > 1.0)
+    				sawWave -= 2.0;
+
+    			filteredSaw = updateFilter(&filt, sawWave);
+    			sample = (int16_t)(NOTEAMPLITUDE*filteredSaw);
+    		}
+    		sampleCounter++;
+    	}
+			
 		}
 	}
 }
+
+// the following code is for sound
+// a very crude FIR lowpass filter
+float updateFilter(fir_8* filt, float val)
+{
+	uint16_t valIndex;
+	uint16_t paramIndex;
+	float outval = 0.0;
+
+	valIndex = filt->currIndex;
+	filt->tabs[valIndex] = val;
+
+	for (paramIndex=0; paramIndex<8; paramIndex++)
+	{
+		outval += (filt->params[paramIndex]) * (filt->tabs[(valIndex+paramIndex)&0x07]);
+	}
+
+	valIndex++;
+	valIndex &= 0x07;
+
+	filt->currIndex = valIndex;
+
+	return outval;
+}
+
+void initFilter(fir_8* theFilter)
+{
+	uint8_t i;
+
+	theFilter->currIndex = 0;
+
+	for (i=0; i<8; i++)
+		theFilter->tabs[i] = 0.0;
+
+	theFilter->params[0] = 3;
+	theFilter->params[1] = 3;
+	theFilter->params[2] = 3;
+	theFilter->params[3] = 3;
+	theFilter->params[4] = 3;
+	theFilter->params[5] = 3;
+	theFilter->params[6] = 3;
+	theFilter->params[7] = 3;
+}
+
