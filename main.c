@@ -18,6 +18,12 @@ const uint16_t TIMER_3_PRESCALER = 2100 - 1;
 const uint16_t TIMER_3_PERIOD = 10000 - 1;
 const uint16_t TIMER_3_FREQUENCY = 4;
 
+// setup the clock spped for TIM4
+// this timer used for idle looping LED
+const uint16_t TIMER_4_PRESCALER = 280 - 1;
+const uint16_t TIMER_4_PERIOD = 10000 - 1;
+const uint16_t TIMER_4_FREQUENCY = 30;
+
 
 // LED names
 const uint16_t GREEN = GPIO_Pin_12;
@@ -56,13 +62,14 @@ bool program_started = false;
 bool display_default_timer = false;
 bool is_programming_state = false; // this state allows user to change the timing for different size of coffee
 bool is_idle = false;
+bool is_finish_blink = false;
 
 uint16_t error_LED_1 = 0;
 uint16_t error_LED_2 = 0;
 uint16_t display_LED_1 = 0;
 int num_blink = 0;
 
-uint16_t coffee_size = 0;
+int coffee_size = 0;
 const int MAX_SIZE_OPTOIN = 3;
 
 // predefine timing for coffee machine
@@ -70,6 +77,9 @@ uint16_t time_small = 2;
 uint16_t time_medium = 4;
 uint16_t time_ex_large = 6;
 uint16_t new_num_click = 0;
+
+
+void UpdateMachineStatus(void);
 
 
 void InitLEDs() {
@@ -120,6 +130,19 @@ void InitTimer_3() {
 	TIM_ITConfig(TIM3, TIM_IT_Update, ENABLE);
 }
 
+void InitTimer_4() {
+	RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM4, ENABLE);
+	
+	timer_InitStructure.TIM_Prescaler = TIMER_4_PRESCALER;
+	timer_InitStructure.TIM_CounterMode = TIM_CounterMode_Up;
+	timer_InitStructure.TIM_Period = TIMER_4_PERIOD;
+	timer_InitStructure.TIM_ClockDivision = TIM_CKD_DIV1;
+	timer_InitStructure.TIM_RepetitionCounter = 0;
+	TIM_TimeBaseInit(TIM4, &timer_InitStructure);
+	TIM_Cmd(TIM4, ENABLE);
+	TIM_ITConfig(TIM4, TIM_IT_Update, ENABLE);
+}
+
 void EnableTimer2Interrupt() {
   NVIC_InitTypeDef nvicStructure;
   nvicStructure.NVIC_IRQChannel = TIM2_IRQn;
@@ -135,6 +158,24 @@ void EnableTimer3Interrupt() {
 	nvicStructure.NVIC_IRQChannelPreemptionPriority = 0;
 	nvicStructure.NVIC_IRQChannelSubPriority = 1;
 	nvicStructure.NVIC_IRQChannelCmd = ENABLE;
+	NVIC_Init(&nvicStructure);
+}
+
+void EnableTimer4Interrupt() {
+	NVIC_InitTypeDef nvicStructure;
+	nvicStructure.NVIC_IRQChannel = TIM4_IRQn;
+	nvicStructure.NVIC_IRQChannelPreemptionPriority = 0;
+	nvicStructure.NVIC_IRQChannelSubPriority = 1;
+	nvicStructure.NVIC_IRQChannelCmd = ENABLE;
+	NVIC_Init(&nvicStructure);
+}
+
+void DisableTimer4Interrupt() {
+	NVIC_InitTypeDef nvicStructure;
+	nvicStructure.NVIC_IRQChannel = TIM4_IRQn;
+	nvicStructure.NVIC_IRQChannelPreemptionPriority = 0;
+	nvicStructure.NVIC_IRQChannelSubPriority = 1;
+	nvicStructure.NVIC_IRQChannelCmd = DISABLE;
 	NVIC_Init(&nvicStructure);
 }
 
@@ -188,6 +229,7 @@ void TIM2_IRQHandler() {
       // if not reset timer to 0, is_long_click will always be true;
       timer_for_button_hold = 0;
 			timer_for_idle = 0;
+			is_idle = false;
     }
 		
 		if ( !is_idle && program_started ) {
@@ -198,7 +240,8 @@ void TIM2_IRQHandler() {
 					// simply exit from programming mode
 					is_programming_state = false;
 				} else {
-					LEDOn(RED);
+					is_idle = true;
+					is_finish_blink = false;
 				}
 				timer_for_idle = 0;
 			}
@@ -217,6 +260,47 @@ void TIM3_IRQHandler()
 			GPIO_ToggleBits(GPIOD, display_LED_1);
 			num_blink--;
 			timer_for_idle = 0;
+		}
+		if ( !num_blink ) is_finish_blink = true;
+	}
+}
+
+void TIM4_IRQHandler()
+{
+	// checks whether the tim4 interrupt has occurred or not
+	if (TIM_GetITStatus(TIM4, TIM_IT_Update) != RESET)
+	{
+		TIM_ClearITPendingBit(TIM4, TIM_IT_Update);
+		if( is_idle ) {
+			if ( num_blink <= 0 && !is_finish_blink ) {
+				if ( coffee_size == 0 ) {
+					LEDOff(MEDIUM);
+					LEDOff(EXTRA_LARGE);
+					LEDOn(SMALL);
+					num_blink = time_small * 2;
+				}
+				else if ( coffee_size == 1 ) {
+					LEDOff(SMALL);
+					LEDOff(EXTRA_LARGE);
+					LEDOn(MEDIUM);
+					num_blink = time_medium * 2;
+				}
+				else if ( coffee_size == 2 ) {
+					LEDOff(MEDIUM);
+					LEDOff(SMALL);
+					LEDOn(EXTRA_LARGE);
+					num_blink = time_ex_large * 2;
+				} 
+				display_LED_1 = GREEN;
+			}else {
+				if ( !num_blink ) {
+					LEDOn(RED);
+					LEDOn(ORANGE);
+					LEDOn(BLUE);
+				}
+				//coffee_size = (coffee_size + 1 ) % 3;
+				//is_finish_blink = false;
+			}
 		}
 	}
 }
@@ -252,6 +336,14 @@ void EXTI0_IRQHandler() {
 		
 		// reset the timer for idle when button event happened
 		timer_for_idle = 0;
+		
+		if ( is_idle ) {
+			is_idle = false;
+			coffee_size = -1;
+			LEDOn(RED);
+			LEDOn(ORANGE);
+			LEDOn(BLUE);
+		}
 		
     // Clears the EXTI line pending bit
     EXTI_ClearITPendingBit(EXTI_Line0);
@@ -377,12 +469,15 @@ void ShowSizeLED() {
 	LEDOff(GREEN);
 	if (coffee_size == 0) {
 		LEDOff(EXTRA_LARGE);
+		LEDOff(MEDIUM);
 		LEDOn(SMALL);
 	} else if (coffee_size == 1) {
 		LEDOff(SMALL);
+		LEDOff(EXTRA_LARGE);
 		LEDOn(MEDIUM);
 	} else if (coffee_size == 2) {
 		LEDOff(MEDIUM);
+		LEDOff(SMALL);
 		LEDOn(EXTRA_LARGE);
 	}
 }	
@@ -400,13 +495,20 @@ int main() {
 	InitEXTI();
 	InitTimer_2();
 	InitTimer_3();
+	InitTimer_4();
 	EnableTimer2Interrupt();
 	EnableTimer3Interrupt();
 	EnableEXTIInterrupt();
 	
 	while(1) {
 		UpdateMachineStatus();
-		if (program_started)
-			ShowLED();
+		if (program_started)  {
+			if ( !is_idle )	{
+				DisableTimer4Interrupt();
+				ShowLED();
+			} else	{
+				EnableTimer4Interrupt();
+			}
+		}
 	}
 }
