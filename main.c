@@ -287,8 +287,11 @@ void UpdateProgrammingStatus() {
 			is_double_click = false;
 			is_single_click = false;
 			is_button_up = true;
-		} else if(is_double_click) 
+		} else if(is_double_click)  {
+			// if the user click too fast, then it will count as 2 clicks 
+			new_num_click+=2;
 			is_double_click = false;
+		}
 	} else {
 		// this just for reset the button click,
 		// because even user click button when displaying the LED,
