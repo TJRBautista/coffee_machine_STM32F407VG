@@ -10,17 +10,19 @@ EXTI_InitTypeDef EXTI_InitStructure; // External interrupt
 NVIC_InitTypeDef NVIC_InitStructure; // NVIC struct
 
 // use for setup the clock speed for TIM2
+// this timer is used for general purpose timing
 const uint16_t TIMER_2_PRESCALER = 232;
 const uint16_t TIMER_2_PERIOD = 2999;
 const uint16_t TIMER_2_FREQUENCY = 120;
 
-// setup the clock spped for TIM3
+// setup the clock speed for TIM3
+// this timer is used for blinking LED
 const uint16_t TIMER_3_PRESCALER = 2100 - 1;
 const uint16_t TIMER_3_PERIOD = 10000 - 1;
 const uint16_t TIMER_3_FREQUENCY = 4;
 
 // setup the clock spped for TIM4
-// this timer used for idle looping LED
+// this timer is used for idle looping LED
 const uint16_t TIMER_4_PRESCALER = 280 - 1;
 const uint16_t TIMER_4_PERIOD = 10000 - 1;
 const uint16_t TIMER_4_FREQUENCY = 30;
@@ -60,11 +62,11 @@ bool is_double_click = false;
 bool is_long_click = false; // need to hold the button for more than 3 seconds
 
 // the state for the machine
-bool program_started = false;
-bool display_default_timer = false;
-bool is_programming_state = false; // this state allows user to change the timing for different size of coffee
-bool is_idle = false;
-bool is_finish_blink = false;
+typedef enum MODE {programming, brewing, neutral} mode;
+mode curMode;
+bool countdown_timer_has_started = false;
+//bool is_programming_state = false; // this state allows user to change the timing for different size of coffee
+bool is_selecting = false;
 
 uint16_t error_LED_1 = 0;
 uint16_t error_LED_2 = 0;
@@ -72,7 +74,7 @@ uint16_t display_LED_1 = 0;
 int num_blink = 0;
 
 int coffee_size = 0;
-const int MAX_SIZE_OPTOIN = 3;
+const int MAX_SIZE_OPTION = 3;
 
 // predefine timing for coffee machine
 uint16_t time_small = 2;
@@ -214,6 +216,28 @@ void InitEXTI() {
 }
 
 
+void InitSound() {
+	SystemInit();
+
+	//enables GPIO clock for PortD
+	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOD, ENABLE);
+
+	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_15;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_OUT;
+	GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+
+	GPIO_Init(GPIOD, &GPIO_InitStructure);
+
+	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOC, ENABLE);
+
+	codec_init();
+	codec_ctrl_init();
+
+	I2S_Cmd(CODEC_I2S, ENABLE);
+
+	initFilter(&filt);
+}
 void LEDOn(uint16_t GPIO_Pin) {
   GPIO_SetBits(GPIOD, GPIO_Pin);
 }
@@ -223,6 +247,7 @@ void LEDOff(uint16_t GPIO_Pin) {
 }
 
 void TIM2_IRQHandler() {
+	// tick = idle time
   //Checks whether the TIM2 interrupt has occurred or not
   if (TIM_GetITStatus(TIM2, TIM_IT_Update) != RESET) {
     TIM_ClearITPendingBit(TIM2, TIM_IT_Update);
@@ -233,25 +258,17 @@ void TIM2_IRQHandler() {
     if (!is_button_up && timer_for_button_hold >= LONG_PRESS_TIME * TIMER_2_FREQUENCY) {
       is_long_click = true;
 			
-      // if not reset timer to 0, is_long_click will always be true;
+      // if timer is not reset to 0, is_long_click will always be true;
       timer_for_button_hold = 0;
 			timer_for_idle = 0;
-			is_idle = false;
     }
 		
-		if ( !is_idle && program_started ) {
-			timer_for_idle++;
-			
-			if ( timer_for_idle > IDLE_TIME * TIMER_2_FREQUENCY ) {
-				if ( is_programming_state ) {
-					// simply exit from programming mode
-					is_programming_state = false;
-				} else {
-					is_idle = true;
-					is_finish_blink = false;
-				}
-				timer_for_idle = 0;
-			}
+		timer_for_idle++;
+		
+		if ( timer_for_idle > IDLE_TIME * TIMER_2_FREQUENCY ) {
+			curMode = neutral;
+			timer_for_idle = 0;
+			is_selecting = false;
 		}
 		
 		if (start_sound_timer) {
@@ -262,28 +279,26 @@ void TIM2_IRQHandler() {
   }
 }
 
-void TIM3_IRQHandler()
-{
+void TIM3_IRQHandler() {
+	// ticks = LED blink
 	// checks whether the tim3 interrupt has occurred or not
 	if (TIM_GetITStatus(TIM3, TIM_IT_Update) != RESET)
 	{
 		TIM_ClearITPendingBit(TIM3, TIM_IT_Update);
-		if ( num_blink && display_LED_1) {
-			GPIO_ToggleBits(GPIOD, display_LED_1);
+		if ( num_blink ) {
+			GPIO_ToggleBits(GPIOD, display_LED_1); //flip led
 			num_blink--;
 			timer_for_idle = 0;
 		}
-		if ( !num_blink ) is_finish_blink = true;
 	}
 }
 
-void TIM4_IRQHandler()
-{
+void TIM4_IRQHandler() {
 	// checks whether the tim4 interrupt has occurred or not
 	if (TIM_GetITStatus(TIM4, TIM_IT_Update) != RESET)
 	{
 		TIM_ClearITPendingBit(TIM4, TIM_IT_Update);
-		if( is_idle ) {
+		/*if( is_idle ) {
 			if ( num_blink <= 0 && !is_finish_blink ) {
 				if ( coffee_size == 0 ) {
 					LEDOff(MEDIUM);
@@ -304,7 +319,7 @@ void TIM4_IRQHandler()
 					num_blink = time_ex_large * 2;
 				} 
 				display_LED_1 = GREEN;
-			}else {
+			} else {
 				if ( !num_blink ) {
 					LEDOn(RED);
 					LEDOn(ORANGE);
@@ -314,13 +329,12 @@ void TIM4_IRQHandler()
 				//coffee_size = (coffee_size + 1 ) % 3;
 				//is_finish_blink = false;
 			}
-		}
+		}*/
 	}
 }
 
 bool CanUpdateClickState() {
 	return (!is_long_click && 
-					program_started && 
 					!is_button_up && 
 					timer_for_button_hold >= MIN_PRESS_TIME * TIMER_2_FREQUENCY);
 }
@@ -350,25 +364,9 @@ void EXTI0_IRQHandler() {
 		// reset the timer for idle when button event happened
 		timer_for_idle = 0;
 		
-		if ( is_idle ) {
-			is_idle = false;
-			coffee_size = -1;
-		}
-		
     // Clears the EXTI line pending bit
     EXTI_ClearITPendingBit(EXTI_Line0);
   }
-}
-
-int GetMaxTime() {
-	int max = time_small;
-	if (max < time_medium) {
-		max = time_medium;
-	}
-	if (max < time_ex_large) {
-		max = time_ex_large;
-	}
-	return max;
 }
 
 void UpdateCoffeeTiming() {
@@ -378,18 +376,36 @@ void UpdateCoffeeTiming() {
 }
 
 void UpdateProgrammingStatus() {
-	if (display_default_timer && num_blink <= 0) {
-		// only response to the click when finish blinking the LED.
+	if (is_selecting) {
 		within_double_click_period = (timer_for_button_released <= (DOUBLE_CLICK_TIME * TIMER_2_FREQUENCY));
+		
+		if (is_single_click && !within_double_click_period) {
+			coffee_size = (coffee_size + 1) % MAX_SIZE_OPTION;
+			is_single_click = false;
+		} else if (is_double_click) {
+			is_selecting = false;
+			new_num_click = 0;
+			timer_for_idle = 0;
+			countdown_timer_has_started = false;
+			is_double_click = false;
+		} else if (is_long_click) {
+			curMode = brewing;
+			is_long_click = false;
+			is_double_click = false;
+			is_single_click = false;
+		}
+	} else if (countdown_timer_has_started && num_blink <= 0) {
+		// only respond to the click when LED finishes blinking
+		within_double_click_period = (timer_for_button_released <= (DOUBLE_CLICK_TIME * TIMER_2_FREQUENCY));
+		
 		if (is_single_click && !within_double_click_period) {
 			new_num_click++;
 			is_single_click = false;
 		} else if(is_long_click) {
-			
 			if ( new_num_click > 0) {
 				UpdateCoffeeTiming();
 				new_num_click = 0;
-				is_programming_state = false;
+				curMode = neutral;
 			}
 			is_long_click = false;
 			is_double_click = false;
@@ -401,9 +417,8 @@ void UpdateProgrammingStatus() {
 			is_double_click = false;
 		}
 	} else {
-		// this just for reset the button click,
-		// because even user click button when displaying the LED,
-		// program should ignore it.
+		// reset the button click
+		// when displaying the LED, program should ignore clicks.
 
 		if (is_single_click) is_single_click = false;
 		if (is_long_click) is_long_click = false;
@@ -411,62 +426,84 @@ void UpdateProgrammingStatus() {
 	}
 }
 
-void UpdateNonProgrammingStatus() {
-	within_double_click_period = (timer_for_button_released <= (DOUBLE_CLICK_TIME * TIMER_2_FREQUENCY));
-	if (is_single_click && !within_double_click_period) {
-		coffee_size = (coffee_size + 1) % MAX_SIZE_OPTOIN;
+void UpdateBrewingStatus() {
+	if (is_selecting) {
+		within_double_click_period = (timer_for_button_released <= (DOUBLE_CLICK_TIME * TIMER_2_FREQUENCY));
+		
+		if ((is_single_click && !within_double_click_period)) {
+			coffee_size = (coffee_size + 1) % MAX_SIZE_OPTION;
+			is_single_click = false;
+		} else if (is_double_click) {
+			is_selecting = false;
+			countdown_timer_has_started = false;
+			is_double_click = false;
+		} else if (is_long_click) {
+			curMode = programming;
+			is_long_click = false;
+			is_double_click = false;
+			is_single_click = false;
+		}
+	} else if (countdown_timer_has_started && num_blink <= 0) {
+		LEDOn(RED);
+		LEDOn(ORANGE);
+		LEDOn(BLUE);
+		output_sound = true;
+		curMode = neutral;
+		timer_for_sound = 0;
+		start_sound_timer = true;
+	} else {
+		if (is_single_click) is_single_click = false;
+		if (is_long_click) is_long_click = false;
+		if (is_double_click) is_double_click = false;
+	}
+}
+
+void UpdateNeutralStatus() {
+	if (is_single_click) {
+		curMode = brewing;
+		is_selecting = true;
 		is_single_click = false;
-	} else if (is_double_click) {
-		is_programming_state = true;
-		new_num_click = 0;
-		timer_for_idle = 0;
-		display_default_timer = false;
+	} else if (is_long_click) {
+		curMode = programming;
+		is_selecting = true;
+		is_long_click = false;
 		is_double_click = false;
+		is_single_click = false;
 	}
 }
 
 void UpdateMachineStatus() {
-  if (program_started) {
-    if (is_programming_state) {
+	switch (curMode) {
+		case programming:
 			UpdateProgrammingStatus();
-    } else
-			UpdateNonProgrammingStatus();
-  } else if (is_long_click && !program_started) {
-    is_long_click = false;
-    program_started = true;
-
-    /*
-    NOTE that the following set is_button_up is not "right"
-    this is just a quick bug fix.
-    BUG: when start the machine by holding the button, as soon as we release the button, 
-    it also treate it as a button click, so the LED will switch from oriange to red
-    */
-    is_button_up = true;
-  }
-
+			break;
+		case brewing:
+			UpdateBrewingStatus();
+			break;
+		case neutral:
+			UpdateNeutralStatus();
+			break;
+	};
 }
 
-void DisplayLED() {
+void DisplayCurrentLED() {
 	if ( coffee_size == 0) {
 		display_LED_1 = SMALL;
-		num_blink = time_small * 2;
 	}
 	else if (coffee_size == 1) {
 		display_LED_1 = MEDIUM;
-		num_blink = time_medium * 2;
 	}
 	else if (coffee_size == 2) {
 		display_LED_1 = EXTRA_LARGE;
-		num_blink = time_ex_large * 2;
 	}
-	display_default_timer = true;
 }
 
 void ShowProgrammingLED() {
 	// every time when first enter programming mode, it should tell user the pre-defined time
-	if (!display_default_timer)
-		DisplayLED();
-	
+	if (!countdown_timer_has_started) {
+		DisplayCurrentLED();
+		countdown_timer_has_started = true;
+	}
 	
 	if ( num_blink <= 0 ) { 
 		LEDOn(GREEN);
@@ -475,8 +512,17 @@ void ShowProgrammingLED() {
 	}
 }
 
+void ShowBrewingLED() {
+	DisplayCurrentLED();
+	countdown_timer_has_started = true;
+}
+
 void ShowSizeLED() {
-	LEDOff(GREEN);
+	if (curMode == programming)
+		LEDOn(GREEN);
+	else
+		LEDOff(GREEN);
+	
 	if (coffee_size == 0) {
 		LEDOff(EXTRA_LARGE);
 		LEDOff(MEDIUM);
@@ -490,13 +536,23 @@ void ShowSizeLED() {
 		LEDOff(SMALL);
 		LEDOn(EXTRA_LARGE);
 	}
-}	
+}
+
+void ShowNeutralLED() {
+	LEDOn(RED);
+	LEDOn(ORANGE);
+	LEDOn(BLUE);
+}
 
 void ShowLED() {
-	if (is_programming_state) {
-		ShowProgrammingLED();
-	} else
+	if (is_selecting)
 		ShowSizeLED();
+	else if (curMode == programming)
+		ShowProgrammingLED();
+	else if (curMode == brewing)
+		ShowBrewingLED();
+	else
+		ShowNeutralLED();
 }
 
 int main() {
@@ -509,74 +565,39 @@ int main() {
 	EnableTimer2Interrupt();
 	EnableTimer3Interrupt();
 	EnableEXTIInterrupt();
+	InitSound();
 	
-	/*
-	This block is for sound setup
-	*/
-	SystemInit();
-
-	//enables GPIO clock for PortD
-	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOD, ENABLE);
-
-	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_15;
-	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_OUT;
-	GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
-	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-
-	GPIO_Init(GPIOD, &GPIO_InitStructure);
-
-	RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOC, ENABLE);
-
-	codec_init();
-	codec_ctrl_init();
-
-	I2S_Cmd(CODEC_I2S, ENABLE);
-
-	initFilter(&filt);
-	
-	/*
-	sound set up
-	*/
-	
+	DisableTimer4Interrupt();
+	curMode = neutral;
+	output_sound = false;
+	timer_for_sound = 0;
+	start_sound_timer = false;
 	
 	while(1) {
 		UpdateMachineStatus();
-		if (program_started)  {
-			if ( !is_idle )	{
-				DisableTimer4Interrupt();
-				ShowLED();
-				output_sound = false;
-				timer_for_sound = 0;
-				start_sound_timer = false;
-			} else	{
-				EnableTimer4Interrupt();
+		ShowLED();
+		
+		if (SPI_I2S_GetFlagStatus(CODEC_I2S, SPI_I2S_FLAG_TXE) && output_sound) {
+			SPI_I2S_SendData(CODEC_I2S, sample);
+
+			//only update on every second sample to insure that L & R ch. have the same sample value
+			if (sampleCounter & 0x00000001)
+			{
+				sawWave += NOTEFREQUENCY;
+				if (sawWave > 1.0)
+					sawWave -= 2.0;
+
+				filteredSaw = updateFilter(&filt, sawWave);
+				sample = (int16_t)(NOTEAMPLITUDE*filteredSaw);
 			}
-			
-			if (SPI_I2S_GetFlagStatus(CODEC_I2S, SPI_I2S_FLAG_TXE) && output_sound)
-    	{
-    		SPI_I2S_SendData(CODEC_I2S, sample);
-
-    		//only update on every second sample to insure that L & R ch. have the same sample value
-    		if (sampleCounter & 0x00000001)
-    		{
-    			sawWave += NOTEFREQUENCY;
-    			if (sawWave > 1.0)
-    				sawWave -= 2.0;
-
-    			filteredSaw = updateFilter(&filt, sawWave);
-    			sample = (int16_t)(NOTEAMPLITUDE*filteredSaw);
-    		}
-    		sampleCounter++;
-    	}
-			
+			sampleCounter++;
 		}
 	}
 }
 
 // the following code is for sound
 // a very crude FIR lowpass filter
-float updateFilter(fir_8* filt, float val)
-{
+float updateFilter(fir_8* filt, float val) {
 	uint16_t valIndex;
 	uint16_t paramIndex;
 	float outval = 0.0;
@@ -597,8 +618,7 @@ float updateFilter(fir_8* filt, float val)
 	return outval;
 }
 
-void initFilter(fir_8* theFilter)
-{
+void initFilter(fir_8* theFilter) {
 	uint8_t i;
 
 	theFilter->currIndex = 0;
