@@ -274,6 +274,10 @@ void TIM2_IRQHandler() {
 		if (start_sound_timer) {
 			timer_for_sound++;
 			output_sound = timer_for_sound <= SOUND_OUTPUT * TIMER_2_FREQUENCY;
+			if (!output_sound) {
+				start_sound_timer = 0;
+				timer_for_sound = 0;
+			}
 		}
 		
   }
@@ -285,10 +289,12 @@ void TIM3_IRQHandler() {
 	if (TIM_GetITStatus(TIM3, TIM_IT_Update) != RESET)
 	{
 		TIM_ClearITPendingBit(TIM3, TIM_IT_Update);
-		if ( num_blink ) {
+		if ( num_blink > 0 ) {
 			GPIO_ToggleBits(GPIOD, display_LED_1); //flip led
 			num_blink--;
 			timer_for_idle = 0;
+		} else {
+			//countdown_timer_has_started= false;
 		}
 	}
 }
@@ -383,6 +389,7 @@ void UpdateProgrammingStatus() {
 			coffee_size = (coffee_size + 1) % MAX_SIZE_OPTION;
 			is_single_click = false;
 		} else if (is_double_click) {
+			//try to reprogram
 			is_selecting = false;
 			new_num_click = 0;
 			timer_for_idle = 0;
@@ -393,6 +400,7 @@ void UpdateProgrammingStatus() {
 			is_long_click = false;
 			is_double_click = false;
 			is_single_click = false;
+			is_button_up = true;
 		}
 	} else if (countdown_timer_has_started && num_blink <= 0) {
 		// only respond to the click when LED finishes blinking
@@ -434,6 +442,7 @@ void UpdateBrewingStatus() {
 			coffee_size = (coffee_size + 1) % MAX_SIZE_OPTION;
 			is_single_click = false;
 		} else if (is_double_click) {
+			//try to give coffee
 			is_selecting = false;
 			countdown_timer_has_started = false;
 			is_double_click = false;
@@ -442,6 +451,7 @@ void UpdateBrewingStatus() {
 			is_long_click = false;
 			is_double_click = false;
 			is_single_click = false;
+			is_button_up = true;
 		}
 	} else if (countdown_timer_has_started && num_blink <= 0) {
 		LEDOn(RED);
@@ -469,6 +479,7 @@ void UpdateNeutralStatus() {
 		is_long_click = false;
 		is_double_click = false;
 		is_single_click = false;
+		is_button_up = true;
 	}
 }
 
@@ -487,22 +498,40 @@ void UpdateMachineStatus() {
 }
 
 void DisplayCurrentLED() {
+	//choose which light to blink
+	if (curMode == brewing)
+		display_LED_1 = GREEN;
+	else {
+		switch(coffee_size) {
+			case 0:
+				display_LED_1 = SMALL;
+				break;
+			case 1:
+				display_LED_1 = MEDIUM;
+				break;
+			case 2:
+				display_LED_1 = EXTRA_LARGE;
+				break;
+		}
+	}
+	
+	//set countdown
 	if ( coffee_size == 0) {
-		display_LED_1 = SMALL;
+		num_blink = time_small * 2;
 	}
 	else if (coffee_size == 1) {
-		display_LED_1 = MEDIUM;
+		num_blink = time_medium * 2;
 	}
 	else if (coffee_size == 2) {
-		display_LED_1 = EXTRA_LARGE;
+		num_blink = time_ex_large * 2;
 	}
+	countdown_timer_has_started = true;
 }
 
 void ShowProgrammingLED() {
-	// every time when first enter programming mode, it should tell user the pre-defined time
+	// every time when trying to reprogram, it should tell user the pre-defined time first
 	if (!countdown_timer_has_started) {
 		DisplayCurrentLED();
-		countdown_timer_has_started = true;
 	}
 	
 	if ( num_blink <= 0 ) { 
@@ -513,8 +542,12 @@ void ShowProgrammingLED() {
 }
 
 void ShowBrewingLED() {
-	DisplayCurrentLED();
-	countdown_timer_has_started = true;
+	if (!countdown_timer_has_started)
+		DisplayCurrentLED();
+	
+	if ( num_blink <= 0 ) { 
+		curMode = neutral;
+	}
 }
 
 void ShowSizeLED() {
@@ -542,6 +575,7 @@ void ShowNeutralLED() {
 	LEDOn(RED);
 	LEDOn(ORANGE);
 	LEDOn(BLUE);
+	LEDOff(GREEN);
 }
 
 void ShowLED() {
@@ -553,6 +587,24 @@ void ShowLED() {
 		ShowBrewingLED();
 	else
 		ShowNeutralLED();
+}
+
+void UpdateSound() {
+	if (SPI_I2S_GetFlagStatus(CODEC_I2S, SPI_I2S_FLAG_TXE) && output_sound) {
+		SPI_I2S_SendData(CODEC_I2S, sample);
+
+		//only update on every second sample to insure that L & R ch. have the same sample value
+		if (sampleCounter & 0x00000001)
+		{
+			sawWave += NOTEFREQUENCY;
+			if (sawWave > 1.0)
+				sawWave -= 2.0;
+
+			filteredSaw = updateFilter(&filt, sawWave);
+			sample = (int16_t)(NOTEAMPLITUDE*filteredSaw);
+		}
+		sampleCounter++;
+	}
 }
 
 int main() {
@@ -576,22 +628,7 @@ int main() {
 	while(1) {
 		UpdateMachineStatus();
 		ShowLED();
-		
-		if (SPI_I2S_GetFlagStatus(CODEC_I2S, SPI_I2S_FLAG_TXE) && output_sound) {
-			SPI_I2S_SendData(CODEC_I2S, sample);
-
-			//only update on every second sample to insure that L & R ch. have the same sample value
-			if (sampleCounter & 0x00000001)
-			{
-				sawWave += NOTEFREQUENCY;
-				if (sawWave > 1.0)
-					sawWave -= 2.0;
-
-				filteredSaw = updateFilter(&filt, sawWave);
-				sample = (int16_t)(NOTEAMPLITUDE*filteredSaw);
-			}
-			sampleCounter++;
-		}
+		UpdateSound();
 	}
 }
 
