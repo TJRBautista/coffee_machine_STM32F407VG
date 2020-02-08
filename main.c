@@ -590,21 +590,26 @@ void ShowLED() {
 }
 
 void UpdateSound() {
-	if (SPI_I2S_GetFlagStatus(CODEC_I2S, SPI_I2S_FLAG_TXE) && output_sound) {
+	if (SPI_I2S_GetFlagStatus(CODEC_I2S, SPI_I2S_FLAG_TXE)) {
 		SPI_I2S_SendData(CODEC_I2S, sample);
 
-		//only update on every second sample to insure that L & R ch. have the same sample value
-		if (sampleCounter & 0x00000001)
-		{
-			sawWave += NOTEFREQUENCY;
-			if (sawWave > 1.0)
-				sawWave -= 2.0;
+		if (output_sound) {
+			//only update on every second sample to insure that L & R ch. have the same sample value
+			if (sampleCounter & 0x00000001)
+			{
+				sawWave += NOTEFREQUENCY;
+				if (sawWave > 1.0)
+					sawWave -= 2.0;
 
-			filteredSaw = updateFilter(&filt, sawWave);
-			sample = (int16_t)(NOTEAMPLITUDE*filteredSaw);
+				filteredSaw = updateFilter(&filt, sawWave);
+				sample = (int16_t)(NOTEAMPLITUDE*filteredSaw);
+			}
+			sampleCounter++;
+		} else {
+			sample = 0;
+			sawWave = 0;
 		}
-		sampleCounter++;
-	}
+	} 
 }
 
 int main() {
