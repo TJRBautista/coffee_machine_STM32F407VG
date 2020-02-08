@@ -293,8 +293,6 @@ void TIM3_IRQHandler() {
 			GPIO_ToggleBits(GPIOD, display_LED_1); //flip led
 			num_blink--;
 			timer_for_idle = 0;
-		} else {
-			//countdown_timer_has_started= false;
 		}
 	}
 }
@@ -457,13 +455,20 @@ void UpdateBrewingStatus() {
 		LEDOn(RED);
 		LEDOn(ORANGE);
 		LEDOn(BLUE);
-		output_sound = true;
-		curMode = neutral;
+		//output_sound = true;
 		timer_for_sound = 0;
 		start_sound_timer = true;
+		curMode = neutral;
+	} else if (is_long_click) {
+		curMode = programming;
+		is_single_click = false;
+		is_long_click = false;
+		is_double_click = false;
+		is_button_up = true;
+		countdown_timer_has_started = true;
+		is_selecting = true;
 	} else {
 		if (is_single_click) is_single_click = false;
-		if (is_long_click) is_long_click = false;
 		if (is_double_click) is_double_click = false;
 	}
 }
@@ -497,7 +502,7 @@ void UpdateMachineStatus() {
 	};
 }
 
-void DisplayCurrentLED() {
+void DisplayCountdown() {
 	//choose which light to blink
 	if (curMode == brewing)
 		display_LED_1 = GREEN;
@@ -531,7 +536,7 @@ void DisplayCurrentLED() {
 void ShowProgrammingLED() {
 	// every time when trying to reprogram, it should tell user the pre-defined time first
 	if (!countdown_timer_has_started) {
-		DisplayCurrentLED();
+		DisplayCountdown();
 	}
 	
 	if ( num_blink <= 0 ) { 
@@ -543,10 +548,10 @@ void ShowProgrammingLED() {
 
 void ShowBrewingLED() {
 	if (!countdown_timer_has_started)
-		DisplayCurrentLED();
+		DisplayCountdown();
 	
 	if ( num_blink <= 0 ) { 
-		curMode = neutral;
+		//curMode = neutral;
 	}
 }
 
